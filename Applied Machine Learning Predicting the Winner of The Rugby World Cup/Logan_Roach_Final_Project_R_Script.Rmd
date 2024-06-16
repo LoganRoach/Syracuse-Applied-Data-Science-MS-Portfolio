@@ -1,0 +1,592 @@
+---
+title: "Logan_Roach_Final_Project_R_script"
+author: "Logan Roach"
+date: "2023-09-15"
+output: pdf_document
+---
+
+```{r}
+#### PACKAGES ####
+
+packages <- c("tidyverse", "FactoMineR", "ggplot2", "rpart", "rpart.plot", 
+              "caret", "naivebayes", "randomForest", "RColorBrewer", "tree",
+              "rattle", "e1071", "wordcloud", "Matrix", "factoextra", "arules",
+              "arulesViz", "cluster", "mclust", "flexclust", "corrplot", "ROCR", "heatmaply")
+
+for (package_name in packages) {
+  if(!requireNamespace(package_name, quietly = TRUE)) {
+    install.packages(package_name)
+  }
+  library(package_name, character.only = TRUE)
+}
+```
+
+```{r}
+#### EDA and DATA PREP ####
+
+data <- read_csv("results.csv")
+
+# Adding winning columns (home/visiting, winning team, combined outcome)
+win_data <- data %>% 
+  mutate(winning_side = ifelse(home_score > away_score, "home", ifelse(away_score > home_score, "away", "draw"))) %>% 
+  mutate(winning_team = ifelse(home_score > away_score, home_team, away_team)) %>% 
+  mutate(winning_team = ifelse(winning_side == "draw", "draw", ifelse(home_score > away_score, home_team, away_team))) %>%
+  mutate(winning_side = ifelse(neutral, "neutral", winning_side)) %>% 
+  mutate(outcome = ifelse(winning_team == "draw", paste("draw", home_team, away_team, sep = "-"), paste(winning_team, winning_side, sep = "-"))) %>%
+  mutate(outcome = ifelse(winning_team == "neutral", paste("neutral", home_team, away_team, sep = "-"), paste(winning_team, winning_side, sep = "-")))
+
+# looking for NA vals
+sum(is.na(win_data))
+
+na_values <- which(is.na(win_data))
+na_values
+na_positions <- data.frame(row = rownames(na_values), column = colnames(na_values))         
+
+na_rows <- win_data[!complete.cases(win_data), ]
+
+# only have NA in competition col 
+# Get rid of NA's in Competition Column, calling them friendly matches since there is no formal competition determined
+win_data <- win_data %>% 
+  mutate_all(~ replace_na(., "Friendly Match"))
+
+sum(is.na(win_data))
+
+# Data Frames By Century
+
+# 19th Century (1800's)
+data18 <- win_data %>% 
+  filter(str_starts(date, "18"))
+
+# 20th Century (1900's)
+data19 <- win_data %>% 
+  filter(str_starts(date, "19"))
+
+# 21rst Century (2000's)
+data20 <- win_data %>% 
+  filter(str_starts(date, "20"))
+
+# Data Frame By World Cup
+
+# World Cup Data
+world_data <- win_data %>% 
+  filter(world_cup == TRUE)
+
+# Initial Visualization of the Data
+
+# All Winning Teams
+ggplot(win_data, aes(x = winning_team)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  labs(title = "Winning Teams Throughout History", x = "Team", y = "Frequency") +
+  theme_minimal()
+
+# 1800's Winning Teams
+ggplot(data18, aes(x = winning_team)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  labs(title = "Winning Teams in the 1800's", x = "Team", y = "Frequency") +
+  theme_minimal()
+
+# 1900's Winning Teams
+ggplot(data19, aes(x = winning_team)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  labs(title = "Winning Teams in the 1900's", x = "Team", y = "Frequency") +
+  theme_minimal()
+
+# 2000's Winning Teams
+ggplot(data20, aes(x = winning_team)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  labs(title = "Winning Teams in the 2000's", x = "Team", y = "Frequency") +
+  theme_minimal()
+
+# World Cup Visualizations
+ggplot(world_data, aes(x = winning_team)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  labs(title = "Winning Teams in Previous Rugby World Cup Games", x = "Team", y = "Frequency") +
+  theme_minimal()
+
+# GAMES OVER TIME
+
+total_dates <- data %>% 
+  select(date)
+total_dates$year <- lubridate::year(total_dates$date)
+year_counts <- total_dates %>% 
+  group_by(year) %>% 
+  summarise(count = n())
+
+ggplot(data = year_counts, aes(x = as.factor(year), y = count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Number of International Games per Year", x = "Year", y = "Games Per Year") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+LWRC_dates <- total_dates %>% 
+  filter(date > as.Date("2020-01-01"))
+
+LWRC_dates <- LWRC_dates %>% 
+  group_by(year) %>% 
+  summarise(count = n())
+ggplot(data = LWRC_dates, aes(x = as.factor(year), y = count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Number of International Games per Year Since Last RWC", x = "Year", y = "Games Per Year") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+S2020 <- total_dates %>% 
+  filter(date > as.Date("2000-01-01"))
+S2020 <- S2020 %>% 
+  group_by(year) %>% 
+  summarise(count = n())
+ggplot(data = S2020, aes(x = as.factor(year), y = count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Number of International Games per Year Since 2020", x = "Year", y = "Games Per Year") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data20, aes(x = winning_team)) + geom_bar(fill = "blue") +
+  xlab("Winning Teams This Century (2000)") + ylab("Games Won") 
+```
+
+```{r}
+#### ARM (Association Rule Mining) H ####
+
+# REDUCED DF of 2000's data:
+# Removing cols: WORLD CUP, NEUTRAL, COUNTRY, CITY, STADIUM, HOME_TEAM, AWAY_TEAM
+recent_transactions1 <- data20 %>%
+  mutate_all(as.factor) %>%
+  select(-world_cup, -neutral, -country, -city, -stadium, -home_team, -away_team)
+
+# FINDING OUT WHO WINS AT HOME AND AWAY
+# V3 no winning team column?
+
+# Item Frequency Plot(s)
+
+itemFrequencyPlot(transactions5, topN = 30, type="absolute")
+
+# WINNING SIDE = HOME ARM MODEL
+Apriori_rules <- apriori(data = recent_transactions1, 
+                         parameter = list(minlen=2, supp = 0.05, conf=0.5), 
+                         appearance = list(default="lhs", rhs="winning_side=home"))
+
+
+#plot Apriori_rules*******************
+plot(Apriori_rules, method = "graph")
+
+inspect(Apriori_rules)
+
+
+# TRYING TO FIND WINNING AWAY SIDES
+# removing winning team
+NWT_transactions <- recent_transactions1 %>% 
+  select(-winning_team)
+
+# Convert to transactions format
+transactions5 <- as(NWT_transactions, "transactions")
+
+# Mining association rules
+rules5 <- apriori(transactions5, parameter = list(support = 0.05, confidence = 0.8))
+
+# Print the mined association rules
+inspect(rules5)
+
+# plot rules
+plot(rules5, method = "graph")
+
+
+#### ARM Since Last Rugby World Cup ####
+
+SLRWC_AR <- data20 %>% 
+  filter(date > as.Date("2020-01-01")) %>% 
+  mutate(winning_margin = pmax(home_score, away_score) - pmin(home_score, away_score)) %>% 
+  select(-neutral, -country, -city, -stadium, -world_cup)
+
+SLRWC_transactions <- SLRWC_AR %>%
+  mutate_all(as.factor)
+
+transactions_SLRWC <- as(SLRWC_transactions, "transactions")
+
+rules_SLWRC <- apriori(transactions_SLRWC, parameter = list(support = 0.08, confidence = 0.5))
+
+inspect(rules_SLWRC)
+
+plot(rules_SLWRC, method = "graph")
+
+
+# Item Frequency Plot(s)
+
+itemFrequencyPlot(transactions_SLRWC, topN = 20, type="absolute")
+
+# V2 trying to find 
+
+SLRWC_AR2 <- SLRWC_AR %>% 
+  select(-outcome)
+
+SLRWC_transactions2 <- SLRWC_AR2 %>%
+  mutate_all(as.factor)
+
+transactions_SLRWC2 <- as(SLRWC_transactions2, "transactions")
+
+rules_SLWRC2 <- apriori(transactions_SLRWC2, parameter = list(support = 0.08, confidence = 0.5))
+
+inspect(rules_SLWRC2)
+
+plot(rules_SLWRC2, method = "graph")
+
+
+
+Apriori_rules_SLWRC_AWAY <- apriori(data = transactions_SLRWC2, 
+                                    parameter = list(supp = 0.05, conf=0.01), 
+                                    appearance = list(default="lhs", rhs="winning_side=away"))
+
+plot(Apriori_rules_SLWRC_AWAY, method = "graph")
+
+# Item Frequency Plot(s)
+
+itemFrequencyPlot(transactions_SLRWC2, topN = 20, type="absolute")
+
+itemFrequencyPlot()
+
+```
+
+```{r}
+#### Decision Trees ####
+
+
+# Intitial Trees
+
+WC_DATA <- win_data %>% 
+  filter(world_cup == TRUE) %>%
+  select(-world_cup, -neutral, -country, -city, -stadium) %>% 
+  mutate(winning_margin = ifelse(winning_side == "home", home_score - away_score, away_score - home_score)) %>% 
+  mutate(winning_margin = pmax(home_score, away_score) - pmin(home_score, away_score))
+
+
+# ALL DATA NEW DF
+
+WIN <- win_data %>% 
+  select(-world_cup, -neutral, -country, -city, -stadium, -competition, -date) %>% 
+  
+  mutate(winning_margin = pmax(home_score, away_score) - pmin(home_score, away_score))
+
+WIN$outcome <- as.factor(WIN$outcome)
+WIN$winning_team <- as.factor(WIN$winning_team)
+# TREEs
+
+#tree1 <- rpart(winning_team ~., data = WIN)
+
+tree1 <- rpart(outcome ~ winning_margin + winning_side + home_team + away_team + home_score + away_score,  data = WIN)
+
+plot(tree1)
+fancyRpartPlot(tree1)
+
+summary(tree1)
+
+set.seed(777)
+
+INDEX <- createDataPartition(WIN$outcome, p = 0.66, list =FALSE)
+
+TRAIN <- WIN[INDEX,]
+TEST <- WIN[-INDEX,]
+
+tree2 <- rpart(outcome ~ winning_margin + winning_side + home_team + 
+                 away_team + home_score + away_score,  data = TRAIN, method = "class")
+predict <- predict(tree2, newdata = TEST, type = "class")
+
+#tree1_CM <- confusionMatrix(predicted1, test1$label)
+
+CM1 <- confusionMatrix(predict, TEST$outcome)
+CM1$table
+
+print(CM1)
+
+accuracy <- CM1$overall["Accuracy"]
+acc <- mean(predict == TEST$outcome)
+
+
+#pruning tree
+
+
+
+#cv_results <- train(tree2, data = TRAIN, method = "rpart", trControl = trainControl(method = "cv", number = 10))
+
+n <- nrow(WIN)
+
+
+size <- n%/%K
+
+rand_value1 <- runif(n)
+
+rank1 <- rank(rand_value1)
+
+block <- (rank1-1)%/%size+1
+
+block <- as.factor(block)
+
+all_err <- numeric(0)
+K = 3
+for (k in 1:K) {
+  model1 <- rpart(outcome ~ winning_margin + winning_side + home_team + 
+                    away_team + home_score + away_score, WIN[block!=k,], method = "class")
+  
+  pred1 <- predict(model1, WIN[block==k,], type = "class")
+  
+  CM1 <- table(WIN$outcome[block==k,],pred1)
+  
+  err_rate1 <- (CM1[1,1]+CM1[2,2])/sum(CM1)
+  
+  all_err <- rbind(all_err, err_rate1)
+}
+
+k_fold_error <- as.data.frame(all_err)
+
+k_fold_error$V1 <- as.numeric(k_fold_error$V1)
+
+mean_erorr <- mean(k_fold_error$V1)
+
+boxplot(k_fold_error, main = "3-fold CV Error Rate")
+
+##########
+#train_data_small$label <- as.factor(train_data_small$label)
+
+winning_team_all <- WIN %>% 
+  select(winning_team)
+
+ggplot(winning_team_all, aes(x = winning_team)) + geom_bar(fill = "lightblue") +
+  xlab("Winning Teams") + ylab("games won") 
+
+tree_simple <- rpart(outcome ~ winning_margin + home_team + away_team + home_score + away_score,  data = WIN)
+
+plot(tree_simple)
+
+fancyRpartPlot(tree_simple, palettes = c("Greys", "Oranges", "Blues"))
+
+tree_simple2 <- rpart(outcome ~ winning_margin + home_team + away_team + home_score + away_score,  data = TRAIN, method = "class")
+fancyRpartPlot(tree_simple2)
+
+rpart.plot(tree_simple2, branch = 1, varlen = 0, tweak = 1.2)
+
+predict2 <- predict(tree_simple2, newdata = TEST, type = "class")
+#predict2 <- factor(predict2, levels = levels(TEST$winning_team))
+CM2 <- confusionMatrix(predict2, TEST$outcome)
+
+levels(predict2)
+levels(TEST$outcome)
+
+CM2$table
+acc <- mean(predict2 == TEST$outcome)
+
+control <- trainControl(method = "cv", number = 3)
+formula <- outcome ~ winning_margin + home_team + away_team + home_score + away_score
+model <- train(formula, data = TRAIN, method = "rpart", trControl = control)
+
+training_predictions <- predict(model, newdata = TRAIN)
+training_metrics <- confusionMatrix(training_predictions, TRAIN$outcome)
+print(paste("Training Accuracy:", training_metrics$overall["Accuracy"]))
+
+testing_predictions <- predict(model, newdata = TEST)
+testing_metrics <- confusionMatrix(testing_predictions, TEST$outcome)
+print(paste("Testing Accuracy:", testing_metrics$overall["Accuracy"]))
+
+hyperparameters <- expand.grid(cp = c(0.01, 0.1, 0.2, 0.3))
+tuned_model <- train(formula, data = TRAIN, method = "rpart", trControl = control, tuneGrid = hyperparameters)
+final_model <- rpart(formula, data = TRAIN, cp = tuned_model$bestTune$cp)
+
+fancyRpartPlot(final_model)
+
+
+# ONLY 2000s
+
+WIN_RECENT <- win_data %>% 
+  filter(str_starts(date, "20")) %>% 
+  select(-world_cup, -neutral, -country, -city, -stadium, -competition, -date, -outcome) %>% 
+  mutate(winning_margin = pmax(home_score, away_score) - pmin(home_score, away_score)) 
+
+winning_team <- WIN_RECENT %>% 
+  select(winning_team)
+
+ggplot(winning_team, aes(x = winning_team)) + geom_bar(fill = "blue") +
+  xlab("Winning Teams Since 2020") + ylab("Games Won") 
+
+tree_WR <- rpart(winning_team ~ winning_margin + home_team + away_team + home_score + away_score,  data = WIN_RECENT)
+fancyRpartPlot(tree_WR)
+
+
+
+
+# prune 
+
+pruned_model_WR <- prune(tree_WR , cp = 0.01) 
+fancyRpartPlot(pruned_model_WR)
+
+# Final Trees 
+SLRWC <- data20 %>% 
+  filter(date > as.Date("2020-01-01")) %>% 
+  select(-world_cup, -neutral, -country, -city, -stadium, -competition, -date, -outcome) %>% 
+  mutate(winning_margin = pmax(home_score, away_score) - pmin(home_score, away_score)) 
+
+winners_SLWRC <- SLRWC %>% 
+  select(winning_team)
+
+ggplot(winners_SLWRC, aes(x = winning_team)) + geom_bar(fill = "blue") +
+  xlab("Winning Teams Since Last World Rugby Cup") + ylab("Games Won") 
+
+winners_PIE <- winners_SLWRC %>% 
+  group_by(winning_team) %>% 
+  summarise(count = n())
+ggplot(data = winners_PIE, aes(x = "Country", y = count, fill = winning_team)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  labs(title = "Distribution of Winning Teams", fill = "Country") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_void() 
+
+SLRWC_TDATA <- SLRWC %>% 
+  mutate(winning_team = as.factor(winning_team))
+
+SLRWC_tree <- rpart(winning_team ~ winning_margin + home_team + away_team + home_score + away_score,  data = SLRWC_TDATA)
+fancyRpartPlot(SLRWC_tree)
+
+summary(SLRWC_tree)
+### train vs test tree 
+
+set.seed(777)
+
+INDEX_SLRWC <- createDataPartition(SLRWC_TDATA$winning_team, p = 0.66, list =FALSE)
+
+TRAIN3 <- SLRWC_TDATA[INDEX_SLRWC,]
+TEST3 <- SLRWC_TDATA[-INDEX_SLRWC,]
+
+tree2_SLRWC <- rpart(winning_team ~ winning_margin + winning_side + home_team + 
+                       away_team + home_score + away_score,  data = TRAIN3, method = "class")
+predict_SLRWC <- predict(tree2_SLRWC, newdata = TEST3, type = "class")
+
+CM3 <- confusionMatrix(predict_SLRWC, TEST3$winning_team)
+CM3$table
+
+print(CM3)
+
+accuracy_RWCTREE <- CM3$overall["Accuracy"]
+
+# prune tree
+
+control_SLRWC <- trainControl(method = "cv", number = 10)
+cp_grid <- expand.grid(cp = seq(0.01, 0.1, by = 0.01))
+modelo <- train(winning_team ~ winning_margin + winning_side + home_team + 
+                  away_team + home_score + away_score, data = TRAIN3, method = "rpart",
+                trControl = control_SLRWC, tuneGrid = cp_grid)
+
+print(modelo)
+
+pruned_tree_SLRWC <- prune(modelo$finalModel, cp = modelo$bestTune$cp)
+fancyRpartPlot(pruned_tree_SLRWC)
+
+predictions_pruned <- predict(pruned_tree_SLRWC, newdata = TEST3, type = "class" )
+
+CM_pruned_SLWRC <- confusionMatrix(predict_SLRWC, TEST3$winning_team)
+CM_pruned_SLWRC$table
+
+print(CM_pruned_SLWRC)
+
+accuracy_PRUNED_RWCTREE <- CM_pruned_SLWRC$overall["Accuracy"]
+
+```
+
+```{r}
+#### Naïve Bayes ####
+
+# Model 1
+HMNB <- SLRWC_NM
+
+trainset <- HMNB %>% 
+  mutate(winning_team = as.factor(winning_team)) %>%
+  mutate(home_team = as.factor(home_team)) %>% 
+  mutate(away_team = as.factor(away_team)) %>% 
+  select(winning_team, home_team, away_team, where(is.numeric))
+
+train_index <- createDataPartition(trainset$winning_team, p = 0.66, list = FALSE)
+train_data <- trainset[train_index, ]
+test_data <- trainset[-train_index, ]
+
+NB_model <- naive_bayes(winning_team ~ .,  data = train_data)
+
+NB_PRED <- predict(NB_model, newdata = test_data)
+
+CM_NB <- table(NB_PRED, test_data$winning_team)
+accuracy_NB <- sum(diag(CM_NB)) / sum(CM_NB)
+
+# Model 2 Laplace = 1
+
+NB_model2 <- naive_bayes(winning_team ~ .,  data = train_data, laplace = 1)
+
+NB_PRED2 <- predict(NB_model2, newdata = test_data, type = "class")
+
+CM_NB2 <- table(NB_PRED2, test_data$winning_team)
+CM_NB2
+
+accuracy_NB2 <- sum(diag(CM_NB2)) / sum(CM_NB2)
+
+confusionMatrix(NB_PRED2, test_data$winning_team)
+
+# Model 3 varying Laplace CV-10
+
+control_NB_SLRWC <- trainControl(method = "cv", number = 10)
+laplace_grid <- data.frame(laplace = seq(0.01, 1.0, by = 0.01))
+laplace_grid2 <- expand.grid(
+  laplace = seq(0.1, 1.0, by = 0.1),
+  usekernel = c(FALSE, TRUE),  # Values for usekernel (e.g., FALSE and TRUE)
+  adjust = seq(0.1, 1.0, by = 0.1))
+
+NB_MODEL <- train(winning_team ~ ., data = train_data, method = "naive_bayes",
+                  trControl = control_NB_SLRWC, tuneGrid = laplace_grid2)
+
+final_model_NB <- naiveBayes(winning_team ~ ., data = train_data, laplace = NB_MODEL$bestTune$laplace)
+
+final_pred_NB <- predict(final_model_NB, newdata = test_data, type = "class")
+
+CM_FINAL_NB <- table(final_pred_NB, test_data$winning_team)
+accuracy_NB_FINAL <- sum(diag(CM_FINAL_NB)) / sum(CM_FINAL_NB)
+
+#correlation matrix
+corr_nums <- trainset %>% 
+  select(home_score, away_score, winning_margin)
+corr_matrix <- cor(corr_nums)
+
+heatmap(corr_matrix, 
+        col = colorRampPalette(c("blue", "white", "red")) (20),
+        symm = TRUE,
+        main = "Correlation Heat Map Naive Bayes Numeric Data")
+
+heatmaply(corr_matrix, 
+          col = colorRampPalette(c("blue", "white", "red")) (20),
+          symm = TRUE,
+          main = "Correlation Heat Map Naive Bayes Numeric Data")
+
+frequency_winning <- table(trainset$winning_margin)
+
+frequency_winning <- as.data.frame(frequency_winning)
+
+ggplot(frequency_winning, aes(x = Var1, y = Freq)) +
+  geom_bar(stat = "identity", fill = "black") +
+  labs(title = "Margin of Victory",
+       x = "Country",
+       y = "Frequency")
+
+frequency_home_table <- table(trainset$home_team)
+
+frequency_home <- as.data.frame(frequency_home_table)
+
+ggplot(frequency_home, aes(x = Var1, y = Freq)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Home Games",
+       x = "Country",
+       y = "Frequency")
+
+frequency_away_table <- table(trainset$away_team)
+
+frequency_away <- as.data.frame(frequency_away_table)
+
+ggplot(frequency_away, aes(x = Var1, y = Freq)) +
+  geom_bar(stat = "identity", fill = "orange") +
+  labs(title = "Away Games",
+       x = "Country",
+       y = "Frequency")
+```
+
