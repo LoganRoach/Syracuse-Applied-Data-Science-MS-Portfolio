@@ -1,0 +1,133 @@
+#tensor
+from tensorflow import keras
+from tensorflow.keras import layers
+
+#keras
+from keras.models import Sequential, Model
+from keras.layers import Dense
+from keras.utils import to_categorical
+
+
+import numpy as np
+import h5py
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+from keras import backend as keras_backend
+
+#y finance stuff
+import yfinance as yf
+import pandas as pd
+from datetime import datetime, timedelta
+
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+
+from stock_module4 import download_and_save_stock_data
+symbol = "^GSPC"
+days = 100000
+output_csv_path = "sp500_data.csv"
+
+download_and_save_stock_data(symbol, days, output_csv_path)
+
+data = pd.read_csv('sp500_data.csv')
+
+# Inspect the first few rows of the dataset
+print(data.head())
+
+# Drop unnecessary columns
+data = data[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+
+# Convert 'Date' column to datetime type
+data['Date'] = pd.to_datetime(data['Date'])
+
+# Sort the data by date
+data = data.sort_values('Date')
+
+# Set 'Date' column as the index
+data = data.set_index('Date')
+
+# Normalize the data using Min-Max scaling
+scaler = MinMaxScaler()
+data_scaled = scaler.fit_transform(data)
+
+# Define the sequence length (e.g., number of days to consider for prediction)
+sequence_length = 10
+
+# Function to create sequences for input and output
+def create_sequences(data, sequence_length):
+    X, y = [], []
+    for i in range(len(data) - sequence_length):
+        X.append(data[i:(i + sequence_length)])
+        y.append(data[i + sequence_length])
+    return np.array(X), np.array(y)
+
+# Create sequences
+X, y = create_sequences(data_scaled, sequence_length)
+
+# Split the data into training, validation, and test sets
+X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.2, random_state=42)
+X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+
+# Reshape data for GRU input (if necessary)
+X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], data.shape[1])
+X_val = X_val.reshape(X_val.shape[0], X_val.shape[1], data.shape[1])
+X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], data.shape[1])
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import GRU, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+# Define the GRU model
+model = Sequential()
+model.add(GRU(units=32, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
+model.add(Dropout(0.2))
+model.add(Dense(units=data.shape[1]))  # Output layer with the same number of features as input
+
+# Compile the model
+model.compile(optimizer='adam', loss='mse')  # You can choose a different loss function based on your problem
+
+
+early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+# Train the model
+history = model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_val, y_val), callbacks=[early_stopping])
+
+# Evaluate the model on the test set
+loss = model.evaluate(X_test, y_test)
+print(f'Test Loss: {loss}')
+
+import matplotlib.pyplot as plt
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+epochs = range(1, len(loss) + 1)
+plt.figure()
+plt.plot(epochs, loss, 'b', label = 'Training MAE')
+plt.plot(epochs, val_loss, 'b', label = 'Validation MAE', color = 'orange')
+plt.title('Training and validation MAE')
+plt.legend()
+plt.show()
+
+
+
+# Make predictions on the test set
+predictions = model.predict(X_test)
+
+# Inverse transform the scaled predictions to the original scale
+predictions_unscaled = scaler.inverse_transform(predictions)
+
+# Inverse transform the scaled actual values to the original scale for comparison
+y_test_unscaled = scaler.inverse_transform(y_test)
+
+# Optionally, you can convert the predictions and actual values to a DataFrame for better visualization
+predictions_df = pd.DataFrame(predictions_unscaled, columns=data.columns)
+y_test_df = pd.DataFrame(y_test_unscaled, columns=data.columns)
+test_dates = data.index[-len(y_test):]
+# Compare predicted values with actual values
+comparison_df = pd.DataFrame({
+    'Date': test_dates,
+    'Actual_Close': y_test_df['Close'],
+    'Predicted_Close': predictions_df['Close']
+})
+
+print(comparison_df)
